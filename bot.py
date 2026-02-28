@@ -63,6 +63,365 @@ def save_management():
     with open(management_file, "w", encoding="utf-8") as f:
         json.dump(management, f, ensure_ascii=False, indent=2)
 
+# ==== Вспомогательные функции ====
+def is_management(user_id):
+    return str(user_id) in [str(m) for m in management]
+
+def is_senior_admin(user_id):
+    return str(user_id) in [str(sa) for sa in senior_admins]
+
+def is_junior_admin(user_id):
+    return str(user_id) in admins
+
+def get_user_role(user_id):
+    if is_management(user_id):
+        return "management"
+    elif is_senior_admin(user_id):
+        return "senior"
+    elif is_junior_admin(user_id):
+        return "junior"
+    return "none"
+
+def format_time(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    if hours and minutes:
+        return f"{hours}ч {minutes}м"
+    elif hours:
+        return f"{hours}ч"
+    elif minutes:
+        return f"{minutes}м"
+    return "меньше минуты"
+
+def get_user_info(user_id):
+    try:
+        user = vk.users.get(user_ids=user_id)[0]
+        return user["first_name"], user["last_name"]
+    except:
+        return "Неизвестно", "Неизвестно"
+
+def parse_user_input(input_text):
+    input_text = input_text.strip()
+    if input_text.startswith('@'):
+        input_text = input_text[1:]
+    if input_text.startswith('[id') and '|' in input_text:
+        try:
+            return input_text.split('[id')[1].split('|')[0]
+        except:
+            pass
+    if 'vk.com/' in input_text:
+        try:
+            parts = input_text.split('vk.com/')[1].split('/')[0]
+            if parts.startswith('id'):
+                return parts[2:]
+            users = vk.users.get(user_ids=parts)
+            if users:
+                return str(users[0]['id'])
+        except:
+            pass
+    if input_text.isdigit():
+        return input_text
+    return None
+
+def send_message(peer_id, message):
+    try:
+        vk.messages.send(
+            peer_id=peer_id,
+            message=message,
+            random_id=get_random_id()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки: {e}")
+
+# ==== Обработчики ====
+def handle_message_new(peer_id, user_id, text):
+    """Основная логика обработки сообщений"""
+    
+    # Текстовые команды
+    if text.startswith('/'):
+        args = text.split()
+        command = args[0].lower()
+        
+        if command == '/start':
+            send_message(peer_id, "👋 Добро пожаловать! Я бот для учета времени администраторов.")
+            return
+        
+        if command == '/help':
+            help_text = (
+                "📋 **Доступные команды:**\n\n"
+                "/start - приветствие\n"
+                "/help - это меню\n"
+                "вошел - отметить вход\n"
+                "вышел - отметить выход\n"
+                "список - показать онлайн\n\n"
+                "**Для руководства:**\n"
+                "/addgroup [группа] [пользователь] - добавить в группу\n"
+                "/removegroup [группа] [пользователь] - удалить из группы\n"
+                "Группы: junior, senior, management"
+            )
+            send_message(peer_id, help_text)
+            return
+        
+        # Команды для руководства
+        if is_management(user_id):
+            if command == '/addgroup' and len(args) >= 3:
+                group = args[1].lower()
+                target_id = parse_user_input(' '.join(args[2:]))
+                if not target_id:
+                    send_message(peer_id, "❌ Не удалось распознать пользователя")
+                    return
+                
+                first_name, last_name = get_user_info(target_id)
+                target_name = f"{first_name} {last_name}"
+                
+                if group == 'junior':
+                    if target_id in admins:
+                        send_message(peer_id, f"⚠️ [id{target_id}|{target_name}] уже является младшим администратором")
+                    else:
+                        admins[target_id] = {
+                            "start_time": time.time(),
+                            "first_name": first_name,
+                            "last_name": last_name
+                        }
+                        save_admins()
+                        send_message(peer_id, f"✅ [id{target_id}|{target_name}] назначен младшим администратором!")
+                
+                elif group == 'senior':
+                    if int(target_id) in senior_admins:
+                        send_message(peer_id, f"⚠️ [id{target_id}|{target_name}] уже является старшим администратором")
+                    else:
+                        senior_admins.append(int(target_id))
+                        save_senior_admins()
+                        send_message(peer_id, f"✅ [id{target_id}|{target_name}] назначен старшим администратором!")
+                
+                elif group == 'management':
+                    if int(target_id) in management:
+                        send_message(peer_id, f"⚠️ [id{target_id}|{target_name}] уже является руководством")
+                    else:
+                        management.append(int(target_id))
+                        save_management()
+                        send_message(peer_id, f"✅ [id{target_id}|{target_name}] назначен руководством!")
+                
+                else:
+                    send_message(peer_id, "❌ Неизвестная группа. Доступно: junior, senior, management")
+            
+            elif command == '/removegroup' and len(args) >= 3:
+                group = args[1].lower()
+                target_id = parse_user_input(' '.join(args[2:]))
+                if not target_id:
+                    send_message(peer_id, "❌ Не удалось распознать пользователя")
+                    return
+                
+                first_name, last_name = get_user_info(target_id)
+                target_name = f"{first_name} {last_name}"
+                
+                if group == 'junior':
+                    if target_id not in admins:
+                        send_message(peer_id, f"⚠️ [id{target_id}|{target_name}] не является младшим администратором")
+                    else:
+                        del admins[target_id]
+                        save_admins()
+                        send_message(peer_id, f"✅ [id{target_id}|{target_name}] удален из младших администраторов")
+                
+                elif group == 'senior':
+                    if int(target_id) not in senior_admins:
+                        send_message(peer_id, f"⚠️ [id{target_id}|{target_name}] не является старшим администратором")
+                    else:
+                        senior_admins.remove(int(target_id))
+                        save_senior_admins()
+                        send_message(peer_id, f"✅ [id{target_id}|{target_name}] удален из старших администраторов")
+                
+                elif group == 'management':
+                    if int(target_id) not in management:
+                        send_message(peer_id, f"⚠️ [id{target_id}|{target_name}] не является руководством")
+                    else:
+                        management.remove(int(target_id))
+                        save_management()
+                        send_message(peer_id, f"✅ [id{target_id}|{target_name}] удален из руководства")
+                
+                else:
+                    send_message(peer_id, "❌ Неизвестная группа. Доступно: junior, senior, management")
+        
+        return
+    
+    # Простые команды по тексту
+    text_lower = text.lower()
+    
+    if text_lower == "вошел":
+        if user_id in admins:
+            send_message(peer_id, "⚠️ Вы уже авторизованы")
+        else:
+            first_name, last_name = get_user_info(user_id)
+            admins[user_id] = {
+                "start_time": time.time(),
+                "first_name": first_name,
+                "last_name": last_name
+            }
+            save_admins()
+            
+            role_text = "Младший администратор"
+            if is_senior_admin(user_id):
+                role_text = "Старший администратор"
+            if is_management(user_id):
+                role_text = "Руководство"
+            
+            send_message(peer_id, f"✅ {role_text} [id{user_id}|{first_name} {last_name}] успешно авторизовался!\n👥 Онлайн: {len(admins)}")
+    
+    elif text_lower == "вышел":
+        if user_id not in admins:
+            send_message(peer_id, "⚠️ Вы не авторизованы")
+        else:
+            first_name = admins[user_id].get("first_name", "Неизвестно")
+            last_name = admins[user_id].get("last_name", "Неизвестно")
+            del admins[user_id]
+            save_admins()
+            send_message(peer_id, f"❌ Администратор [id{user_id}|{first_name} {last_name}] вышел из системы\n👥 Онлайн: {len(admins)}")
+    
+    elif text_lower == "список":
+        if not admins:
+            send_message(peer_id, "👥 Нет администраторов онлайн")
+        else:
+            now = time.time()
+            lines = []
+            for uid, info in admins.items():
+                online_time = now - info.get("start_time", now)
+                lines.append(f"👤 [id{uid}|{info['first_name']} {info['last_name']}] — ⏱ {format_time(online_time)}")
+            send_message(peer_id, "👥 Администраторы онлайн:\n\n" + "\n".join(lines))
+    
+    elif text_lower == "руководство" or text_lower == "админы":
+        # Показываем списки
+        result = []
+        
+        if management:
+            result.append("👑 **Руководство:**")
+            for i, m_id in enumerate(management, 1):
+                first_name, last_name = get_user_info(m_id)
+                status = "✅" if str(m_id) in admins else "❌"
+                result.append(f"{i}. [id{m_id}|{first_name} {last_name}] {status}")
+        
+        if senior_admins:
+            result.append("\n👤 **Старшие администраторы:**")
+            for i, sa_id in enumerate(senior_admins, 1):
+                first_name, last_name = get_user_info(sa_id)
+                status = "✅" if str(sa_id) in admins else "❌"
+                result.append(f"{i}. [id{sa_id}|{first_name} {last_name}] {status}")
+        
+        if result:
+            send_message(peer_id, "\n".join(result))
+        else:
+            send_message(peer_id, "📋 Списки пусты")
+
+
+@app.route('/', methods=['POST'])
+def webhook():
+    """Главный обработчик вебхуков"""
+    try:
+        data = request.get_json()
+        logger.info(f"Получен вебхук: {data.get('type')}")
+        
+        # Проверка секретного ключа
+        if SECRET_KEY and data.get('secret') != SECRET_KEY:
+            logger.warning("Неверный секретный ключ")
+            return 'Forbidden', 403
+        
+        event_type = data.get('type')
+        
+        # Подтверждение сервера
+        if event_type == 'confirmation':
+            logger.info("Подтверждение сервера")
+            return CONFIRMATION_TOKEN, 200
+        
+        # Новое сообщение
+        if event_type == 'message_new':
+            msg = data['object']['message']
+            peer_id = msg['peer_id']
+            user_id = str(msg['from_id'])
+            text = msg.get('text', '')
+            
+            logger.info(f"Сообщение от {user_id}: {text}")
+            handle_message_new(peer_id, user_id, text)
+        
+        # Всегда возвращаем 'ok' для VK
+        return 'ok', 200
+    
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
+        return 'Internal Server Error', 500
+
+
+@app.route('/', methods=['GET'])
+def health():
+    """Проверка работоспособности"""
+    return 'Bot is running', 200
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)import os
+import json
+import time
+import logging
+from flask import Flask, request
+import vk_api
+from vk_api.utils import get_random_id
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+# ==== Конфигурация VK ====
+VK_TOKEN = os.getenv("VK_TOKEN")
+CONFIRMATION_TOKEN = os.getenv("CONFIRMATION_TOKEN")
+SECRET_KEY = os.getenv("SECRET_KEY")
+
+if not VK_TOKEN or not CONFIRMATION_TOKEN:
+    logger.error("VK_TOKEN или CONFIRMATION_TOKEN не найдены в .env")
+    exit(1)
+
+# ==== Инициализация VK ====
+vk_session = vk_api.VkApi(token=VK_TOKEN)
+vk = vk_session.get_api()
+
+# ==== Файлы для хранения данных ====
+admins_file = "admins.json"
+senior_admins_file = "senior_admins.json"
+management_file = "management.json"
+
+# ==== Загрузка данных из JSON ====
+def load_json(file_path, default):
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return default
+
+admins = load_json(admins_file, {})
+senior_admins = load_json(senior_admins_file, [])
+management = load_json(management_file, [])
+
+logger.info(f"Загружено: {len(admins)} мл.админов, {len(senior_admins)} ст.админов, {len(management)} руководства")
+
+# ==== Функции сохранения ====
+def save_admins():
+    with open(admins_file, "w", encoding="utf-8") as f:
+        json.dump(admins, f, ensure_ascii=False, indent=2)
+
+def save_senior_admins():
+    with open(senior_admins_file, "w", encoding="utf-8") as f:
+        json.dump(senior_admins, f, ensure_ascii=False, indent=2)
+
+def save_management():
+    with open(management_file, "w", encoding="utf-8") as f:
+        json.dump(management, f, ensure_ascii=False, indent=2)
+
 # ==== Вспомогательные функции (без изменений) ====
 def is_management(user_id):
     return str(user_id) in [str(m) for m in management]
@@ -884,5 +1243,6 @@ try:
     
 except Exception as e:
     print(f"❌ Ошибка: {e}")
+
 
 
